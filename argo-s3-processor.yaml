@@ -1,0 +1,77 @@
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: s3-events
+spec:
+  s3:
+    bucket-events:
+      bucketName: your-bucket-name
+      events:
+        - s3:ObjectCreated:*
+        - s3:ObjectModified:*
+      filter:
+        prefix: ""  # You can add a prefix if needed
+      region: your-aws-region
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: s3-file-sensor
+spec:
+  template:
+    serviceAccountName: argo-events-sa
+  dependencies:
+    - name: s3-dep
+      eventSourceName: s3-events
+      eventName: bucket-events
+  triggers:
+    - template:
+        name: s3-file-processor
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: WorkflowTemplate
+              metadata:
+                name: s3-file-processor
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: s3-file-processor
+spec:
+  entrypoint: process-file
+  arguments:
+    parameters:
+      - name: bucket-name
+        value: "{{ .Input.body.bucket.name }}"
+      - name: file-key
+        value: "{{ .Input.body.object.key }}"
+      - name: event-type
+        value: "{{ .Input.body.eventName }}"
+  templates:
+    - name: process-file
+      inputs:
+        parameters:
+          - name: bucket-name
+          - name: file-key
+          - name: event-type
+      container:
+        image: your-registry/s3-file-processor:latest
+        env:
+          - name: S3_BUCKET_NAME
+            value: "{{inputs.parameters.bucket-name}}"
+          - name: FILE_KEY
+            value: "{{inputs.parameters.file-key}}"
+          - name: EVENT_TYPE
+            value: "{{inputs.parameters.event-type}}"
+          - name: AWS_REGION
+            value: "your-aws-region"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m" 
