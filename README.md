@@ -1,214 +1,171 @@
-# S3 File Processor with Argo Workflows
+# S3 File Processor with PostgreSQL Integration
 
-This project implements an automated file processing system that monitors an S3 bucket and processes files as they are uploaded or modified. The system uses Argo Workflows and Events to handle the file processing in a scalable and reliable manner.
+A Java-based application that monitors an S3 bucket for file uploads and modifications, processes CSV files, and stores the data in PostgreSQL. The system includes comprehensive error reporting and monitoring capabilities.
 
 ## Architecture
 
 The system consists of the following components:
-- Argo Events: Monitors S3 bucket for new file uploads and modifications
-- Argo Workflows: Orchestrates the file processing workflow
-- Java Application: Processes the files using AWS SDK
 
-## Sequence Diagram
+1. **S3 Event Monitoring**: Listens for file uploads and modifications in the configured S3 bucket
+2. **File Processing**: Downloads and processes CSV files from S3
+3. **Database Integration**: Stores processed data in PostgreSQL with proper indexing
+4. **Error Reporting**: Generates detailed error reports and stores them in S3
+
+### Sequence Diagram
 
 ```mermaid
 sequenceDiagram
-    participant User
     participant S3 as S3 Bucket
-    participant ArgoEvents as Argo Events
-    participant ArgoWorkflow as Argo Workflow
-    participant Processor as Java Processor
-    participant AWS as AWS SDK
+    participant Processor as File Processor
+    participant DB as PostgreSQL
+    participant ErrorS3 as Error Reports S3
 
-    User->>S3: Upload/Update File
-    S3-->>ArgoEvents: Trigger s3:ObjectCreated/s3:ObjectModified Event
-    ArgoEvents->>ArgoWorkflow: Create Workflow Instance
-    ArgoWorkflow->>Processor: Start Processing Container
-    Processor->>AWS: Download File
-    AWS-->>Processor: File Content
-    Processor->>Processor: Process File (Based on Event Type)
-    Processor->>AWS: Cleanup (if needed)
-    Processor-->>ArgoWorkflow: Processing Complete
-    ArgoWorkflow-->>ArgoEvents: Workflow Status
+    Note over S3,ErrorS3: File Upload/Modification
+    S3->>Processor: S3 Event Trigger
+    Processor->>S3: Download File
+    Processor->>Processor: Parse CSV
+    Processor->>DB: Store Records
+    
+    alt Success
+        Processor->>S3: Cleanup
+    else Error
+        Processor->>ErrorS3: Generate Error Report
+        Processor->>S3: Cleanup
+    end
 ```
 
-## Prerequisites
+## Features
 
-- OpenShift cluster with Argo Workflows and Events installed
-- AWS S3 bucket
-- AWS credentials with appropriate permissions
-- Java 11 or later
-- Gradle 7.6.1 or later
+### File Processing
+- Monitors S3 bucket for file uploads and modifications
+- Processes CSV files with header validation
+- Supports batch processing for better performance
+- Handles both new files and updates
 
-## Installation
+### Database Operations
+- Efficient batch processing with configurable batch size
+- Automatic timestamp management (created_at, updated_at)
+- Optimized indexes for better query performance
+- Connection pooling with HikariCP
 
-1. Install Argo Workflows and Events:
+### Error Reporting
+- Detailed error reports in JSON format
+- Automatic error report generation and S3 upload
+- Context-specific error information
+- Configurable error report retention
+- Error tracking across different processing stages:
+  - File download errors
+  - CSV parsing errors
+  - Database operation errors
+  - General processing errors
+
+## Configuration
+
+### Environment Variables
 ```bash
-# Install Argo Workflows
-kubectl create namespace argo
-kubectl apply -n argo -f https://github.com/argoproj/argo-workflows/releases/download/v3.4.8/install.yaml
-
-# Install Argo Events
-kubectl create namespace argo-events
-kubectl apply -n argo-events -f https://github.com/argoproj/argo-events/releases/download/v1.7.4/install.yaml
+S3_BUCKET_NAME=your-bucket-name
+FILE_KEY=path/to/file.csv
+AWS_REGION=us-east-1
+EVENT_TYPE=ObjectCreated:Put
+ERROR_REPORTS_PREFIX=error-reports
 ```
 
-2. Build the Java application:
+### Application Properties
+```properties
+# Database Configuration
+db.url=jdbc:postgresql://localhost:5432/csv_processor
+db.username=postgres
+db.password=postgres
+db.pool.size=10
+
+# AWS Configuration
+aws.region=us-east-1
+aws.s3.bucket.name=your-bucket-name
+
+# Error Reporting
+app.error.reports.prefix=error-reports
+app.error.reports.retention.days=30
+app.error.reports.max.size.mb=10
+```
+
+## Error Report Structure
+
+Error reports are stored in JSON format with the following structure:
+
+```json
+{
+  "timestamp": "2024-03-21T10:30:45",
+  "fileKey": "example.csv",
+  "eventType": "ObjectCreated:Put",
+  "errorType": "java.sql.SQLException",
+  "errorMessage": "Database connection failed",
+  "stackTrace": "...",
+  "additionalInfo": {
+    "processingType": "newFile",
+    "recordId": "123",
+    "bucketName": "my-bucket",
+    "region": "us-east-1"
+  }
+}
+```
+
+## Building and Running
+
+1. Build the project:
 ```bash
 ./gradlew build
 ```
 
-3. Build and push the Docker image:
+2. Run the application:
 ```bash
-docker build -t your-registry/s3-file-processor:latest .
-docker push your-registry/s3-file-processor:latest
+./gradlew run
 ```
 
-4. Apply the Kubernetes configurations:
-```bash
-# Apply RBAC first
-oc apply -f argo-rbac.yaml
+## Error Handling
 
-# Apply the Argo configurations
-oc apply -f argo-s3-processor.yaml
-```
+The system implements comprehensive error handling at multiple levels:
 
-## Configuration
+1. **File Processing Errors**
+   - S3 download failures
+   - File format issues
+   - CSV parsing errors
 
-Update the following configurations in `argo-s3-processor.yaml`:
+2. **Database Errors**
+   - Connection failures
+   - Constraint violations
+   - Transaction errors
 
-1. S3 Bucket Configuration:
-```yaml
-spec:
-  s3:
-    bucket-events:
-      bucketName: your-bucket-name
-      region: your-aws-region
-      events:
-        - s3:ObjectCreated:*
-        - s3:ObjectModified:*
-```
-
-2. Container Resources:
-```yaml
-resources:
-  requests:
-    memory: "512Mi"
-    cpu: "200m"
-  limits:
-    memory: "1Gi"
-    cpu: "500m"
-```
-
-## AWS IAM Permissions
-
-The system requires the following AWS permissions:
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "s3:GetObject",
-                "s3:HeadObject"
-            ],
-            "Resource": [
-                "arn:aws:s3:::your-bucket-name/*"
-            ]
-        }
-    ]
-}
-```
-
-## Monitoring
-
-1. View Workflow Status:
-```bash
-argo list
-```
-
-2. Check Workflow Logs:
-```bash
-argo logs @latest
-```
-
-3. Monitor in Argo UI:
-```bash
-kubectl port-forward svc/argo-server -n argo 2746:2746
-```
-Then visit: http://localhost:2746
-
-## Development
-
-### Project Structure
-```
-.
-├── build.gradle              # Gradle build configuration
-├── src/
-│   └── main/
-│       ├── java/
-│       │   └── com/
-│       │       └── example/
-│       │           └── S3FileProcessor.java
-│       └── resources/
-│           └── logback.xml   # Logging configuration
-├── Dockerfile               # Container build file
-├── argo-rbac.yaml          # RBAC configuration
-└── argo-s3-processor.yaml  # Argo configuration
-```
-
-### Adding Custom Processing Logic
-
-The Java processor handles different types of events:
-
-1. New File Upload:
-```java
-private static void processNewFile(File file) throws IOException {
-    // Add your new file processing logic here
-}
-```
-
-2. File Update:
-```java
-private static void processFileUpdate(File file) throws IOException {
-    // Add your file update processing logic here
-}
-```
-
-3. Common Processing:
-```java
-private static void processFile(File file) throws IOException {
-    // Add your common file processing logic here
-}
-```
-
-## Event Types
-
-The system handles the following S3 event types:
-- `s3:ObjectCreated:Put` - New file upload
-- `s3:ObjectCreated:CompleteMultipartUpload` - Large file upload completion
-- `s3:ObjectModified:Put` - File update
-- `s3:ObjectModified:CompleteMultipartUpload` - Large file update completion
+3. **Error Report Management**
+   - Automatic report generation
+   - S3 upload with metadata
+   - Configurable retention period
+   - Size limits for reports
 
 ## Troubleshooting
 
-1. Check Argo Events logs:
-```bash
-kubectl logs -n argo-events -l app.kubernetes.io/name=eventsource-controller
-```
+### Common Issues
 
-2. Check Workflow logs:
-```bash
-argo logs @latest
-```
+1. **Database Connection Issues**
+   - Check database credentials and connection string
+   - Verify network connectivity
+   - Check connection pool settings
 
-3. Common Issues:
-   - AWS credentials not properly configured
-   - Insufficient IAM permissions
-   - Resource limits too low
-   - Network connectivity issues
-   - Event type not properly handled
+2. **S3 Access Issues**
+   - Verify AWS credentials
+   - Check bucket permissions
+   - Validate region configuration
+
+3. **Error Report Issues**
+   - Check S3 bucket permissions for error reports
+   - Verify error report prefix configuration
+   - Monitor error report size limits
+
+### Error Report Location
+
+Error reports are stored in the configured S3 bucket under the specified prefix:
+```
+s3://<bucket-name>/<error-reports-prefix>/YYYY-MM-DD-HH-mm-ss-error-report.json
+```
 
 ## Contributing
 
